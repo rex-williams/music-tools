@@ -1,0 +1,50 @@
+#!/bin/sh
+if [ -z "$1" ]; then
+    echo "Search query needed."
+    exit
+fi
+if [ -z "$MUSICDIR" ]; then
+    MUSICDIR="$HOME/Music"
+    mkdir -p "$MUSICDIR"
+fi
+QUERY="$(echo "$1" | sed 's/ /%20/g')"
+TMPDIR="$(mktemp -d)"
+RESULTFILE="$(mktemp -p "$TMPDIR")"
+curl -s "https://www.qobuz.com/us-en/search/albums/$QUERY" -o "$RESULTFILE"
+NAMES="$(mktemp -p "$TMPDIR")"
+URLS="$(mktemp -p "$TMPDIR")"
+< "$RESULTFILE" shup "a[class=\"ReleaseCardInfosTitle\"]" | sed 's_            _\n_g' | grep data-title | cut -d\" -f2 > "$NAMES"
+< "$RESULTFILE" shup "a[class=\"ReleaseCardInfosTitle\"]" | sed 's_            _\n_g' | grep href | cut -d\" -f2 > "$URLS"
+URL="$(paste -d* "$NAMES" "$URLS" | fzf -i --no-sort | cut -d"*" -f2)"
+rm -f "$RESULTFILE" "$NAMES" "$URLS"
+[ -n "$URL" ] || exit
+ID="$(echo "$URL" | cut -d"/" -f5)"
+echo "Extracting files if already downloaded."
+test -f "$HOME/.local/share/qdl/$ID.tar.gz" && tar xvf "$HOME/.local/share/qdl/$ID.tar.gz" -C "$TMPDIR"
+echo "Testing FLAC files and if bad, removing:"
+for FILE in "$TMPDIR/"*.flac; do
+    flac -s -t "$FILE" || rm -fv "$FILE" &
+done
+wait
+qobuz-dl dl -d "$TMPDIR" -q "6" --no-db "$URL"
+cd "$TMPDIR" || exit
+echo "Compressing files."
+tar caf "$HOME"/.local/share/qdl/"$ID".tar.gz ./*
+echo "Copying files to music library."
+for FILE in ./*.flac; do
+    {
+        TAGS="$(metaflac --show-all-tags "$FILE")"
+        ARTIST="$(echo "$TAGS" | grep -i "ARTIST=" | sort | sed 1q | cut -d"=" -f2 | sed "s/[:\/]/-/g" | sed 's/ *$//' | sed 's/ [ ]*/ /g' | sed 's/^ *//' | sed 's/^\.*//' | sed 's_/__g' | iconv -t ASCII)"
+        DATE="$(echo "$TAGS" | grep -i "^DATE=" | cut -d"=" -f2 | cut -d- -f1 | sed "s/[:\/]/-/g" | sed 's/ *$//' | sed 's/ [ ]*/ /g' | sed 's/^ *//' | sed 's/^\.*//' | sed 's_/__g' | iconv -t ASCII)"
+        ALBUM="$(echo "$TAGS" | grep -i "^ALBUM=" | cut -d"=" -f2 | sed "s/[:\/]/-/g" | sed 's/ *$//' | sed 's/ [ ]*/ /g' | sed 's/^ *//' | sed 's/^\.*//' | sed 's_/__g' | iconv -t ASCII)"
+        TRACK="$(printf '%02d\n' "$(echo "$TAGS" | grep -i "^TRACKNUMBER=" | cut -d"=" -f2 | cut -d- -f1 | awk '{$0=int($0)}1')")"
+        TITLE="$(echo "$TAGS" | grep  -i "^TITLE=" | cut -d"=" -f2 | sed "s/[:\/]/-/g" | sed 's/ *$//' | sed 's/ [ ]*/ /g' | sed 's/^ *//' | sed 's/^\.*//' | sed 's_/__g' | iconv -t ASCII)"
+        mkdir -p "$MUSICDIR/$ARTIST/$DATE - $ALBUM"
+        test -f "$MUSICDIR/$ARTIST/$DATE - $ALBUM/$TRACK - $TITLE.mp3" && rm -fv "$MUSICDIR/$ARTIST/$DATE - $ALBUM/$TRACK - $TITLE.mp3"
+        metaflac --add-replay-gain "$FILE"
+        cp -f "$FILE" "$MUSICDIR/$ARTIST/$DATE - $ALBUM/$TRACK - $TITLE.flac" && echo "$FILE: Copied" || exit
+        mpc update >/dev/null
+    } &
+done
+wait
+rm -rf "$TMPDIR"

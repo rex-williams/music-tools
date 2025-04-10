@@ -1,0 +1,79 @@
+#!/bin/bash -e
+TYPE="$1"
+QUERY="$2"
+BACKUPDIR="$HOME/.local/share/musicdl"
+TMPDIR="/tmp/musicdl/$$"
+TRACKSFILE="$TMPDIR/$$-track.list"
+BEET_OPTS="--flat -c" [ -n "$BITRATE" ] || BITRATE="320"
+mkdir -p "$BACKUPDIR" "$TMPDIR"
+case "$TYPE" in
+    a|album)
+        FMT_LIST='.data[]|((.artist.name+" - "+.title+.name))+" ~ "+.type+"/"+(.id|tostring)'
+        TYPE="album"
+        ;;
+    t|track)
+        FMT_LIST='.data[]|((.artist.name+" - "+.album.title+" - "+.title+.name))+" ~ "+.type+"/"+(.id|tostring)'
+        TYPE="track"
+        BEET_OPTS="-c -s"
+        ;;
+    A|artist)
+        FMT_LIST='.data[]|((.name))+" ~ "+.type+"/"+(.id|tostring)'
+        TYPE="artist"
+        BEET_OPTS="-c -s"
+        ;;
+    p|playlist)
+        FMT_LIST='.data[]|((.title))+" ~ "+.type+"/"+(.id|tostring)'
+        TYPE="playlist"
+        BEET_OPTS="-c -s"
+        ;;
+    url)
+        URLS="$2"
+        TYPE="$(echo "$URLS" | cut -d"/" -f1)"
+        ;;
+    rebuild)
+        cd "$BACKUPDIR" || exit
+        for FILE in *.tar.gz
+        do
+            if test "$(jobs | wc -l)" -ge 3; then
+                wait -n
+            fi
+            URL="${FILE//.tar.gz//}" &&
+            musicdl url "track/$URL" &
+        done
+        exit
+        ;;
+    *)
+        printf "ERROR: Invalid type.\n" && exit
+esac
+if [ -z "$URLS" ]
+then
+    QUERY="${QUERY// /%20/}"
+    URLS="$(curl -s "https://api.deezer.com/search/$TYPE?q=$QUERY&limit=50" | jq "$FMT_LIST" | fzf --no-sort --multi | cut -d"~" -f2 | sed 's/ //g' | sed 's/"//g')"
+    if [ -z "$URLS" ]; then exit; fi
+fi
+[ "$TYPE" = "track" ] && for URL in $URLS; do echo "$URL" | cut -d"/" -f2 > "$TRACKSFILE"; done
+[ "$TYPE" = "album" ] && for URL in $URLS; do curl -s "https://api.deezer.com/$URL/tracks" | jq "(if .data then .data else .tracks.data end)[]|(.id)" > "$TRACKSFILE"; done
+[ "$TYPE" = "artist" ] && for URL in $URLS; do curl -s "https://api.deezer.com/$URL/top?limit=15" | jq "(if .data then .data else .tracks.data end)[]|(.id)" > "$TRACKSFILE"; done
+[ "$TYPE" = "playlist" ] && for URL in $URLS; do curl -s "https://api.deezer.com/$URL/tracks" | jq "(if .data then .data else .tracks.data end)[]|(.id)" > "$TRACKSFILE"; done
+while IFS= read -r ID; do
+    if test "$(jobs | wc -l)" -ge 5; then
+        wait -n
+    fi
+    {
+    DIR="$TMPDIR/$ID"
+    mkdir -p "$DIR"
+    BACKUPFILE="$ID.tar.gz"
+    test -f "$BACKUPDIR/$BACKUPFILE" && tar xf "$BACKUPDIR/$BACKUPFILE" -C "$DIR"
+    test -f "$DIR"/*.mp3 && mp3val "$DIR"/*.mp3 | grep -q WARNING && rm -fv "$DIR"/*.mp3
+    test -f "$DIR"/*.flac && flac -s -t "$DIR"/*.flac || rm -fv "$DIR"/*.flac
+    test -f "$DIR"/*.flac || test -f "$DIR"/*.mp3 || deemix -b "$BITRATE" -p "$DIR" "https://deezer.com/track/$ID"
+    test -f "$DIR"/*.flac && rm -fv "$DIR"/*.mp3
+    cd "$DIR" || exit
+    tar caf "$BACKUPDIR/$BACKUPFILE" ./*
+    intf ./*
+    echo "$ID: Done"
+    } &
+done<"$TRACKSFILE"
+rm -rf "$TRACKSFILE"
+wait
+rm -rf "$TMPDIR"
