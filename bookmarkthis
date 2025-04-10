@@ -1,0 +1,11 @@
+#!/bin/bash
+if grep -q "^$(xclip -o)$" "$HOME"/.local/share/snippets
+then
+    notify-send "Oops." "Already bookmarked"
+else
+    notify-send "Bookmark added!" "$(xclip -o) is saved to the file"
+    xclip -o >> "$HOME"/.local/share/snippets
+fi
+TMPFILE="$(mktemp)"
+sort "$HOME"/.local/share/snippets | uniq | tee "$TMPFILE"
+mv -f "$TMPFILE" "$HOME"/.local/share/snippets
