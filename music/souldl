@@ -4,4 +4,4 @@ MUSICDIR="$HOME/audio/music"
 DIR="/tmp/souldl/$$"
 mkdir -p "$DIR"
 sldl "$QUERY" --concurrent-downloads 5 --path "$DIR" --format flac --strict-conditions --album --interactive
-beet import -c "$DIR"
+find "$DIR" -name "*.flac" -exec intf {} \;
