@@ -1,6 +1,6 @@
-# music-tools
+# scripts
 
-The Music Scripts i have made.
+Scripts i have made.
 
 # Install
 it's just a simple shell script put it in your $PATH
