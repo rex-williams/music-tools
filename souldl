@@ -1,0 +1,7 @@
+#!/bin/sh
+QUERY="$1"
+MUSICDIR="$HOME/audio/music"
+DIR="/tmp/souldl/$$"
+mkdir -p "$DIR"
+sldl "$QUERY" --concurrent-downloads 5 --path "$DIR" --format flac --strict-conditions --album --interactive
+find "$DIR" -name "*.flac" -exec intf {} \;
