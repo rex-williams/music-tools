@@ -1,0 +1,66 @@
+#!/bin/sh
+set -x
+mungefilename ()
+{
+    echo "$@" |	\
+        sed 1q | \
+        sed "s/[:\/]/ /g" | \
+        sed 's/ [ ]*/ /g' | \
+        sed 's/^ *//' | \
+        sed 's/ *$//' | \
+        iconv -t ASCII//TRANSLIT
+    }
+FILE="$(readlink -f "$1")"
+TYPE="${FILE##*.}"
+[ -n "$COPY" ] || COPY="cp -fv"
+case "$TYPE" in
+    mp3)
+        mp3val "$FILE" | grep -q WARNING && exit
+        #YEAR="$(echo "$FILETAGS" | grep "TDRC=" | cut -d"=" -f2 | head -c4)"
+        FILETAGS="$(mid3v2 -l "$FILE")"
+        ARTIST="$(mungefilename "$(echo "$FILETAGS" | grep "TPE" | cut -d"=" -f2)")"
+        DATE="$(echo "$FILETAGS" | grep -e "TDRC=" -e "TYER=" | cut -d"=" -f2 | sed 1q | cut -d- -f1)"
+        ALBUM="$(mungefilename "$(echo "$FILETAGS" | grep "TALB=" | cut -d"=" -f2)")"
+        TRACK="$(printf '%02d\n' "$(echo "$FILETAGS" | grep "TRCK=" | cut -d"=" -f2 | cut -d"/" -f1 | cut -d- -f1 | awk '{$0=int($0)}1')")"
+        TITLE="$(mungefilename "$(echo "$FILETAGS" | grep "TIT2=" | cut -d"=" -f2)")"
+        mkdir -p "$HOME/audio/music/$ARTIST/$DATE - $ALBUM"
+        test -f "$HOME/audio/music/$ARTIST/$DATE - $ALBUM/$TRACK - $TITLE.flac" ||
+            $COPY "$FILE" "$HOME/audio/music/$ARTIST/$DATE - $ALBUM/$TRACK - $TITLE.mp3" || exit
+        mp3gain -s i "$HOME/audio/music/$ARTIST/$DATE - $ALBUM/$TRACK - $TITLE.mp3"
+        mpc update >/dev/null
+        ;;
+    flac)
+        flac -s -t "$FILE" || exit
+        #ARTIST="$(mungefilename "$(echo "$FILETAGS" | grep -i "\bARTIST=" | cut -d"=" -f2)")"
+        FILETAGS="$(metaflac --show-all-tags "$FILE")"
+        ARTIST="$(mungefilename "$(echo "$FILETAGS" | grep -i "ARTIST=" | sort | sed 1q | cut -d"=" -f2)")"
+        DATE="$(echo "$FILETAGS" | grep -i "^DATE=" | cut -d"=" -f2 | cut -d- -f1)"
+        ALBUM="$(mungefilename "$(echo "$FILETAGS" | grep -i "^ALBUM=" | cut -d"=" -f2)")"
+        TRACK="$(printf '%02d\n' "$(echo "$FILETAGS" | grep -i "^TRACKNUMBER=" | cut -d"=" -f2 | cut -d- -f1 | awk '{$0=int($0)}1')")"
+        TITLE="$(mungefilename "$(echo "$FILETAGS" | grep  -i "^TITLE=" | cut -d"=" -f2)")"
+        mkdir -p "$HOME/audio/music/$ARTIST/$DATE - $ALBUM"
+        rm -fv "$HOME/audio/music/$ARTIST/$DATE - $ALBUM/$TRACK - $TITLE.mp3"
+        $COPY "$FILE" "$HOME/audio/music/$ARTIST/$DATE - $ALBUM/$TRACK - $TITLE.flac" || exit
+        [ -f "$HOME/audio/music/$ARTIST/$DATE - $ALBUM/cover.jpg" ] ||
+        [ -f "$HOME/audio/music/$ARTIST/$DATE - $ALBUM/cover.png" ] ||
+        $COPY "$(dirname "$FILE")/"*.jpg "$HOME/audio/music/$ARTIST/$DATE - $ALBUM/cover.jpg" ||
+        $COPY "$(dirname "$FILE")/"*.png "$HOME/audio/music/$ARTIST/$DATE - $ALBUM/cover.png" ||
+        echo "$FILETAGS" | grep -i "^REPLAYGAIN_TRACK_GAIN=" || metaflac --add-replay-gain "$HOME/audio/music/$ARTIST/$DATE - $ALBUM/$TRACK - $TITLE.flac"
+        mpc update >/dev/null
+        ;;
+    pdf)
+        cp -v "$FILE" "$HOME"/dox
+        ;;
+    epub)
+        cp -v "$FILE" "$HOME"/dox/books
+        ;;
+    cbz|cbr)
+        cp -v "$FILE" "$HOME"/dox/comics
+        ;;
+    png)
+        cp -v "$FILE" "$HOME"/pix
+        ;;
+    *)
+        printf "ERROR: Invalid filetype.\n"
+        exit
+esac

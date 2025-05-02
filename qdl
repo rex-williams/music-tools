@@ -1,0 +1,46 @@
+#!/bin/sh
+set -x
+if [ -z "$1" ]; then
+    echo "Search query needed."
+    exit
+fi
+if [ -z "$MUSICDIR" ]; then
+    MUSICDIR="$HOME/Music"
+    mkdir -p "$MUSICDIR"
+fi
+QUERY="$(echo "$1" | sed 's/ /%20/g')"
+TMPDIR="$(mktemp -d /tmp/qdl.XXXXXXXX)"
+RESULTFILE="$(mktemp -p "$TMPDIR")"
+curl -s "https://www.qobuz.com/us-en/search/albums/$QUERY" -o "$RESULTFILE"
+NAMES="$(mktemp -p "$TMPDIR")"
+URLS="$(mktemp -p "$TMPDIR")"
+< "$RESULTFILE" shup "a[class=\"ReleaseCardInfosTitle\"]" | sed 's_            _\n_g' | grep data-title | cut -d\" -f2 > "$NAMES"
+< "$RESULTFILE" shup "a[class=\"ReleaseCardInfosTitle\"]" | sed 's_            _\n_g' | grep href | cut -d\" -f2 > "$URLS"
+URL="$(paste -d* "$NAMES" "$URLS" | fzf -i --no-sort | cut -d"*" -f2)"
+rm -f "$RESULTFILE" "$NAMES" "$URLS"
+[ -n "$URL" ] || exit
+ID="$(echo "$URL" | cut -d"/" -f5)"
+echo "Extracting files if already downloaded."
+test -f "$HOME/.local/share/qdl/$ID.tar.gz" && tar xvf "$HOME/.local/share/qdl/$ID.tar.gz" -C "$TMPDIR"
+echo "Testing FLAC files and if bad, removing:"
+for FILE in "$TMPDIR/"*.flac; do
+    flac -s -t "$FILE" || rm -fv "$FILE"
+done
+wait
+printf "Put the genre of the album: "
+read -r GENRE
+qobuz-dl dl -d "$TMPDIR" -q "6" --no-db "$URL"
+cd "$TMPDIR" || exit
+echo "Compressing files."
+for FILE in "$TMPDIR/"*.flac; do
+    {
+        metaflac --remove-tag=GENRE "$FILE"
+        metaflac --set-tag=GENRE="$GENRE" "$FILE"
+    } &
+done
+wait
+tar caf "$HOME"/.local/share/qdl/"$ID".tar.gz ./*
+echo "Copying files to music library."
+find "$TMPDIR" -name "*.flac" -exec intf {} \;
+wait
+rm -rf "$TMPDIR"
