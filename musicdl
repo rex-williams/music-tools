@@ -2,11 +2,15 @@
 TYPE="$1"
 QUERY="$2"
 BACKUPDIR="$HOME/.local/share/musicdl"
-TMPDIR="$(mktemp -d)"
-TRACKSFILE="$(mktemp -p "$TMPDIR")"
-[ -n "$BITRATE" ] || BITRATE="320"
-mkdir -p "$BACKUPDIR" "$TMPDIR"
+TMPDIR="$(mktemp -d /tmp/musicdl.XXXXXX)"
+TRACKSFILE="$(mktemp -p "$TMPDIR" track.XXXXXX)"
+[ -n "$MUSICDIR" ] || MUSICDIR="$HOME/Music"
+mkdir -p "$BACKUPDIR"
 case "$TYPE" in
+    A|artist)
+        FMT_LIST='.data[]|((.name))+" ~ "+.type+"/"+(.id|tostring)'
+        TYPE="artist"
+        ;;
     a|album)
         FMT_LIST='.data[]|((.artist.name+" - "+.title+.name))+" ~ "+.type+"/"+(.id|tostring)'
         TYPE="album"
@@ -14,10 +18,6 @@ case "$TYPE" in
     t|track)
         FMT_LIST='.data[]|((.artist.name+" - "+.album.title+" - "+.title+.name))+" ~ "+.type+"/"+(.id|tostring)'
         TYPE="track"
-        ;;
-    A|artist)
-        FMT_LIST='.data[]|((.name))+" ~ "+.type+"/"+(.id|tostring)'
-        TYPE="artist"
         ;;
     p|playlist)
         FMT_LIST='.data[]|((.title))+" ~ "+.type+"/"+(.id|tostring)'
@@ -27,54 +27,62 @@ case "$TYPE" in
         URLS="$2"
         TYPE="$(echo "$URLS" | cut -d"/" -f1)"
         ;;
-    rebuild)
-        cd "$BACKUPDIR" || exit
-        for FILE in *.tar.gz
-        do
-            URL="$(echo "$FILE" | sed 's/.tar.gz//g')" && musicdl url "track/$URL" &
-        done
-        wait
-        exit
-        ;;
     *)
         printf "ERROR: Invalid type.\n" && exit
 esac
-if [ -z "$URLS" ]
-then
+if [ -z "$URLS" ]; then
     QUERY="$(echo "$QUERY" | sed 's/ /%20/g')"
     URLS="$(curl -s "https://api.deezer.com/search/$TYPE?q=$QUERY&limit=30" | jq "$FMT_LIST" | fzf --no-sort --multi | cut -d"~" -f2 | sed 's/ //g' | sed 's/"//g')"
-    if [ -z "$URLS" ]; then exit; fi
+    [ -z "$URLS" ] && exit
 fi
-[ "$TYPE" = "track" ] && for URL in $URLS; do echo "$URL" | cut -d"/" -f2 > "$TRACKSFILE"; done &
-[ "$TYPE" = "album" ] && for URL in $URLS; do curl -s "https://api.deezer.com/$URL/tracks" | jq "(if .data then .data else .tracks.data end)[]|(.id)" > "$TRACKSFILE"; done &
-[ "$TYPE" = "artist" ] && for URL in $URLS; do curl -s "https://api.deezer.com/$URL/top?limit=15" | jq "(if .data then .data else .tracks.data end)[]|(.id)" > "$TRACKSFILE"; done &
-[ "$TYPE" = "playlist" ] && for URL in $URLS; do curl -s "https://api.deezer.com/$URL/tracks" | jq "(if .data then .data else .tracks.data end)[]|(.id)" > "$TRACKSFILE"; done &
+if [ "$TYPE" = "track" ]; then 
+    for URL in $URLS; do
+        echo "$URL" | cut -d"/" -f2 > "$TRACKSFILE"
+    done
+fi
+if [ "$TYPE" = "album" ]; then
+    for URL in $URLS; do
+        curl -s "https://api.deezer.com/$URL/tracks" | jq "(if .data then .data else .tracks.data end)[]|(.id)" > "$TRACKSFILE"
+    done
+fi
+if [ "$TYPE" = "artist" ]; then
+    for URL in $URLS; do
+        curl -s "https://api.deezer.com/$URL/top?limit=15" | jq "(if .data then .data else .tracks.data end)[]|(.id)" > "$TRACKSFILE"
+    done
+fi
+if [ "$TYPE" = "playlist" ]; then
+    for URL in $URLS; do
+        curl -s "https://api.deezer.com/$URL/tracks" | jq "(if .data then .data else .tracks.data end)[]|(.id)" > "$TRACKSFILE"
+    done
+fi
 while IFS= read -r ID; do
+    if [[ $(jobs -r -p | wc -l) -ge 5 ]]; then
+        wait -n
+    fi
     {
         DIR="$(mktemp -d -p "$TMPDIR")"
         BACKUPFILE="$ID.tar.gz"
-        test -f "$BACKUPDIR/$BACKUPFILE" && tar xf "$BACKUPDIR/$BACKUPFILE" -C "$DIR"
+        [ -f "$BACKUPDIR/$BACKUPFILE" ] && tar xf "$BACKUPDIR/$BACKUPFILE" -C "$DIR"
         test -f "$DIR"/*.mp3 && mp3val "$DIR"/*.mp3 | grep -q WARNING && rm -fv "$DIR"/*.mp3
-        test -f "$DIR"/*.flac && flac -s -t "$DIR"/*.flac || rm -fv "$DIR"/*.flac
-        test -f "$DIR"/*.flac || test -f "$DIR"/*.mp3 || deemix -b "$BITRATE" -p "$DIR" "https://deezer.com/track/$ID"
-        test -f "$DIR"/*.flac && rm -fv "$DIR"/*.mp3
-        cd "$DIR" || exit
-        tar caf "$BACKUPDIR/$BACKUPFILE" ./*
+        test -f "$DIR"/*.mp3 || deemix -b "320" -p "$DIR" "https://deezer.com/track/$ID"
         mp3val "$FILE" | grep -q WARNING && exit
-        FILETAGS="$(mid3v2 -l "$FILE")"
-        ARTIST="$(echo "$TAGS" | grep -i "TPE=" | sed 1q | cut -d"=" -f2 | sed "s/[:\/]/-/g" | sed 's/ *$//' | sed 's/ [ ]*/ /g' | sed 's/^ *//' | sed 's/^\.*//' | sed 's_/__g' | iconv -t ASCII)"
-        DATE="$(echo "$FILETAGS" | grep -e "TDRC=" -e "TYER=" | cut -d"=" -f2 | sed 1q | cut -d- -f1)"
+        cd "$DIR" || exit
+        FILE="$(ls "$DIR"/*.mp3)"
+        TAGS="$(mid3v2 -l "$FILE")"
+        echo "$TAGS" | grep -F "TXXX=replaygain_track_gain" >/dev/null ||
+            mp3gain -s i "$DIR"/*.mp3
+        tar caf "$BACKUPDIR/$BACKUPFILE" ./*
+        ARTIST="$(echo "$TAGS" | grep -i "TPE" | sed 1q | cut -d"=" -f2 | cut -d"/" -f1 | sed "s/[:\/]/-/g" | sed 's/ *$//' | sed 's/ [ ]*/ /g' | sed 's/^ *//' | sed 's/^\.*//' | sed 's_/__g' | iconv -t ASCII)"
+        DATE="$(echo "$TAGS" | grep -e "TDRC=" -e "TYER=" | cut -d"=" -f2 | sed 1q | cut -d- -f1)"
         ALBUM="$(echo "$TAGS" | grep -i "^TALB=" | cut -d"=" -f2 | sed "s/[:\/]/-/g" | sed 's/ *$//' | sed 's/ [ ]*/ /g' | sed 's/^ *//' | sed 's/^\.*//' | sed 's_/__g' | iconv -t ASCII)"
-        TRACK="$(printf '%02d\n' "$(echo "$FILETAGS" | grep "TRCK=" | cut -d"=" -f2 | cut -d"/" -f1 | cut -d- -f1 | awk '{$0=int($0)}1')")"
+        TRACK="$(printf '%02d\n' "$(echo "$TAGS" | grep "TRCK=" | cut -d"=" -f2 | cut -d"/" -f1 | cut -d- -f1 | awk '{$0=int($0)}1')")"
         TITLE="$(echo "$TAGS" | grep  -i "^TIT2=" | cut -d"=" -f2 | sed "s/[:\/]/-/g" | sed 's/ *$//' | sed 's/ [ ]*/ /g' | sed 's/^ *//' | sed 's/^\.*//' | sed 's_/__g' | iconv -t ASCII)"
         mkdir -p "$MUSICDIR/$ARTIST/$DATE - $ALBUM"
         test -f "$MUSICDIR/$ARTIST/$DATE - $ALBUM/$TRACK - $TITLE.flac" ||
-            $COPY "$FILE" "$MUSICDIR/$ARTIST/$DATE - $ALBUM/$TRACK - $TITLE.mp3" || exit
-        mp3gain -s i "$MUSICDIR/$ARTIST/$DATE - $ALBUM/$TRACK - $TITLE.mp3"
+            cp -f "$FILE" "$MUSICDIR/$ARTIST/$DATE - $ALBUM/$TRACK - $TITLE.mp3" || exit
         mpc update >/dev/null
-        echo "$ID: Done"
+        echo "$ARTIST - $TITLE: Done"
     } &
-done<"$TRACKSFILE"
-rm -rf "$TRACKSFILE"
+done < "$TRACKSFILE"
 wait
 rm -rf "$TMPDIR"
